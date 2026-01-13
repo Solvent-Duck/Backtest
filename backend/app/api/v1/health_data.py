@@ -68,12 +68,13 @@ async def upload_health_data(
         await f.write(content)
     
     # Process in background
+    # Note: For production, use Celery task instead of BackgroundTasks
+    # For now, we'll process synchronously in background task
     background_tasks.add_task(
         process_health_export_async,
         file_path,
         str(user_id),
         str(import_record.id),
-        db,
     )
     
     return import_record
@@ -83,17 +84,25 @@ async def process_health_export_async(
     file_path: str,
     user_id: str,
     import_id: str,
-    db: AsyncSession,
 ):
     """Async wrapper for background processing"""
-    try:
-        await process_health_export(file_path, user_id, import_id, db)
-    except Exception as e:
-        print(f"Error processing health export: {e}")
-    finally:
-        # Clean up file
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    from app.core.database import AsyncSessionLocal
+    
+    async with AsyncSessionLocal() as db:
+        try:
+            await process_health_export(file_path, user_id, import_id, db)
+        except Exception as e:
+            print(f"Error processing health export: {e}")
+            # Update import record with error
+            import_record = await db.get(DataImport, import_id)
+            if import_record:
+                import_record.status = "failed"
+                import_record.error_message = str(e)
+                await db.commit()
+        finally:
+            # Clean up file
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
 
 @router.get("/imports", response_model=List[DataImportResponse])
